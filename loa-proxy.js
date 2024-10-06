@@ -6,12 +6,16 @@ const readline = require('readline');
 const { HttpsProxyAgent } = require('https-proxy-agent');
 
 class LegendOfArcadia {
-    headers(authorization) {
+    headers(authorization, id) {
         return {
             "Accept": "*/*",
             "Accept-Encoding": "gzip, deflate, br, zstd",
             "Accept-Language": "en-US,en;q=0.9",
             "Authorization": `Basic ${authorization}`,
+            "Loa-Version": "1.00.56917",
+            "Loa-Uid": id.toString(),
+            "Loa-Sequence": `2`,
+            "Signature": `none`,
             "Origin": "https://loahero.legendofarcadia.io",
             "Priority": "u=1, i",
             "Referer": "https://loahero.legendofarcadia.io/",
@@ -90,15 +94,15 @@ class LegendOfArcadia {
                 }
             }
         };
-
+    
         const agent = new HttpsProxyAgent(proxy);
-
+    
         try {
             const response = await axios.post(url, payload, { headers, httpsAgent: agent });
             if (response.data.code === 0) {
-                const token = response.data.data.token;
+                const { gateway, token, id } = response.data.data;
                 this.log(`Đăng nhập thành công!`.green);
-                return token;
+                return { gateway, token, id };
             } else {
                 this.log('Lỗi: Không thể đăng nhập.'.red);
             }
@@ -109,9 +113,8 @@ class LegendOfArcadia {
         return null;
     }
 
-    async rescueHero(authorization, heroId, proxy) {
-        const url = "https://mini-01.legendofarcadia.io/Mini/RescueHero";
-        const headers = this.headers(authorization);
+    async rescueHero(gateway, headers, heroId, proxy) {
+        const url = `${gateway}/RescueHero`;
         const payload = { HeroId: heroId };
         const agent = new HttpsProxyAgent(proxy);
 
@@ -129,49 +132,55 @@ class LegendOfArcadia {
         }
     }
 
-    async heartbeat(authorization, state, attackCount, proxy) {
-        const url = "https://mini-01.legendofarcadia.io/Mini/Heartbeat";
-        const headers = this.headers(authorization);
+    async heartbeat(gateway, headers, state, attackCount, proxy) {
+        const url = `${gateway}/Heartbeat`;
         const payload = { State: state, AttackCount: attackCount };
         const agent = new HttpsProxyAgent(proxy);
     
+        const sendRequest = async () => {
+            try {
+                const response = await axios.post(url, payload, { headers, httpsAgent: agent });
+                return response.data.data?.UserBaseData;
+            } catch (error) {
+                this.log(`${'Lỗi khi gọi API Heartbeat'.red}`);
+                console.error(error.message.red);
+                return null;
+            }
+        };
+    
         try {
-            let response = await axios.post(url, payload, { headers, httpsAgent: agent });
-            let userBaseData = response.data.data?.UserBaseData;
-            if (userBaseData) {
-                let balance = userBaseData.Coin;
-                let Energy = userBaseData.Energy;
-                this.log(`Tap thành công với AttackCount: ${attackCount.toString().white} | Balance: ${balance.toString().white} | Energy: ${Energy.toString().white}`.green);
-                while (Energy > 10) {
-                    await new Promise(resolve => setTimeout(resolve, 1000)); 
-                    response = await axios.post(url, payload, { headers, httpsAgent: agent });
-                    userBaseData = response.data.data?.UserBaseData;
-                    Energy = userBaseData?.Energy;
-                    balance = userBaseData?.Coin;
+            let energy = Infinity;
+            while (energy > 10) {
+                for (let i = 0; i < 10; i++) {
+                    const result = await sendRequest();
+                    if (result) {
+                        let balance = result.Coin;
+                        energy = result.Energy;
+                        this.log(`Tap ${i + 1} | Balance: ${balance.toString().white} | Energy: ${energy.toString().white}`.green);
     
-                    if (Energy && balance !== undefined) {
-                        this.log(`Tiếp tục tap | Balance: ${balance.toString().yellow} | Energy: ${Energy.toString().yellow}`.white);
+                        if (energy <= 10) {
+                            this.log(`Năng lượng thấp, dừng tap.`.yellow);
+                            return;
+                        }
                     }
-    
-                    if (Energy <= 10) {
-                        this.log(`Năng lượng thấp, dừng tap.`.red);
-                        break;
+
+                    if (i < 9) {
+                        await new Promise(resolve => setTimeout(resolve, 500));
                     }
                 }
-            } else {
-                this.log(`Tap thành công với AttackCount: ${attackCount.toString().white}`.green);
+    
+                await new Promise(resolve => setTimeout(resolve, 500));
             }
         } catch (error) {
-            this.log(`${'Lỗi khi gọi API Heartbeat'.red}`);
+            this.log(`${'Lỗi không mong đợi trong quá trình tap'.red}`);
             console.error(error.message.red);
         }
     }
 
-    async syncMissionAndUnlockHeroes(authorization, state, proxy) {
-        const syncMissionUrl = "https://mini-01.legendofarcadia.io/Mini/SyncMissionHB";
-        const heroUnlockUrl = "https://mini-01.legendofarcadia.io/Mini/HeroUnlock";
-        const heroLvUpUrl = "https://mini-01.legendofarcadia.io/Mini/HeroLvUp";
-        const headers = this.headers(authorization);
+    async syncMissionAndUnlockHeroes(gateway, headers, state, proxy) {
+        const syncMissionUrl = `${gateway}/SyncMissionHB`;
+        const heroUnlockUrl = `${gateway}/HeroUnlock`;
+        const heroLvUpUrl = `${gateway}/HeroLvUp`;
         const payload = { State: state, AttackCount: 0 };
         const agent = new HttpsProxyAgent(proxy);
 
@@ -181,6 +190,7 @@ class LegendOfArcadia {
 
             if (heroes) {
                 const existingHeroIds = Object.keys(heroes).map(id => parseInt(id));
+                existingHeroIds.sort((a, b) => b - a);
                 const allHeroIds = Array.from({ length: 16 }, (_, i) => i + 1); 
                 const unlockHeroIds = allHeroIds.filter(id => !existingHeroIds.includes(id));
 
@@ -218,6 +228,14 @@ class LegendOfArcadia {
             } else {
                 this.log(`${'Lỗi: Không tìm thấy dữ liệu Hero'.red}`);
             }
+
+            if (heroes) {
+                this.log('Thông tin Hero hiện có:'.green);
+                for (const [heroId, heroData] of Object.entries(heroes)) {
+                    this.log(`Hero ID: ${heroId}, Level: ${heroData.Level}, Stamina: ${heroData.Stamina}`.cyan);
+                }
+            }
+
         } catch (error) {
             this.log(`${'Lỗi khi gọi API đồng bộ nhiệm vụ và mở khóa Hero'.red}`);
             console.error(error.message.red);
@@ -241,9 +259,8 @@ class LegendOfArcadia {
         }
     }
 
-    async rescueFriendHero(authorization, proxy) {
-        const url = "https://mini-01.legendofarcadia.io/Mini/GetFriends";
-        const headers = this.headers(authorization);
+    async rescueFriendHero(gateway, headers, proxy) {
+        const url = `${gateway}/GetFriends`;
         const payload = { Num: 10, LastId: "" };
         const agent = new HttpsProxyAgent(proxy);
         
@@ -255,7 +272,7 @@ class LegendOfArcadia {
             if (relationInfo && relationInfo.length > 0) {
                 for (const friend of relationInfo) {
                     if (friend.HeroTiredNum === 1) {
-                        const rescueUrl = "https://mini-01.legendofarcadia.io/Mini/RescueFriendHero";
+                        const rescueUrl = `${gateway}/RescueFriendHero`;
                         const rescuePayload = { Uid: friend.Id };
                         await axios.post(rescueUrl, rescuePayload, { headers, httpsAgent: agent });
                         this.log(`Hồi phục hero giúp bạn bè thành công | ID : ${friend.Id}`.green);
@@ -270,64 +287,131 @@ class LegendOfArcadia {
         }
     }    
 
-    async getWorldBossState(authorization, accountNumber, hoinangcap, proxy) {
-        const url = "https://mini-01.legendofarcadia.io/Mini/GetWorldBossState";
-        const headers = this.headers(authorization);
+    async getWorldBossState(gateway, headers, accountNumber, hoinangcap, proxy) {
+        const url = `${gateway}/GetWorldBossState`;
         const agent = new HttpsProxyAgent(proxy);
-
+    
         try {
             const proxyIP = await this.checkProxyIP(proxy);
             if (!proxyIP) {
                 this.log(`Bỏ qua tài khoản ${accountNumber} do lỗi proxy.`.yellow);
                 return; 
             }
-
+    
             const response = await axios.get(url, { headers, httpsAgent: agent });
             const userData = response.data.data?.UserBaseData;
             let bossState = response.data.data?.BossState;
             let chestState = response.data.data?.ChestState;
             const state = response.data.data?.State;
-
+    
             if (userData) {
                 console.log(`========== Tài khoản ${accountNumber} | ${userData.Name.green} | IP: ${proxyIP.white} ==========`);
                 this.log(`Point: ${userData.Point.toString().white}`.green);
+                this.log(`Minikey: ${userData.MiniKey.toString().white}`.green);
                 this.log(`Coin: ${userData.Coin.toString().white}`.green);
                 this.log(`Energy: ${userData.Energy.toString().white}`.green);
-
+    
+                await this.syncAndReceiveMissions(gateway, headers, proxy);
+                
+                if (userData.MiniKey > 0) {
+                    await this.openBox(gateway, headers, userData.MiniKey, proxy);
+                }
+    
                 const playerStates = response.data.data?.PlayerStates;
                 for (const player of playerStates) {
                     if (player.CurrentHp === 0) {
-                        await this.rescueHero(authorization, player.HeroId, proxy);
+                        await this.rescueHero(gateway, headers, player.HeroId, proxy);
                     }
                 }
-
+    
                 if (userData.Energy > 0) {
                     if (bossState) {
                         const attackCount = Math.floor(userData.Energy / bossState.Click2Coin);
                         if (attackCount > 0) {
-                            await this.heartbeat(authorization, state, attackCount, proxy);
+                            await this.heartbeat(gateway, headers, state, attackCount, proxy);
                         }
                     } else if (chestState) {
                         const attackCount = Math.floor(userData.Energy / chestState.Click2Coin);
                         if (attackCount > 0) {
-                            await this.heartbeat(authorization, state, attackCount, proxy);
+                            await this.heartbeat(gateway, headers, state, attackCount, proxy);
                         }
                     } else {
                         this.log(`${'Không tìm thấy dữ liệu.'.red}`);
                     }
                 }
-
+    
                 if (hoinangcap) {
-                    await this.syncMissionAndUnlockHeroes(authorization, state, proxy);
+                    await this.syncMissionAndUnlockHeroes(gateway, headers, state, proxy);
                 }
-
-                await this.rescueFriendHero(authorization, proxy);
-
+    
+                await this.rescueFriendHero(gateway, headers, proxy);
+    
             } else {
                 this.log(`${'Lỗi: Không tìm thấy UserBaseData'.red}`);
             }
         } catch (error) {
             this.log(`${'Lỗi khi lấy thông tin'.red}`);
+            console.error(error.message.red);
+        }
+    }
+
+    async syncAndReceiveMissions(gateway, headers, proxy) {
+        const syncUrl = `${gateway}/SyncMission`;
+        const recvUrl = `${gateway}/RecvMission`;
+        const agent = new HttpsProxyAgent(proxy);
+    
+        try {
+            const syncResponse = await axios.get(syncUrl, { headers, httpsAgent: agent });
+            const missions = syncResponse.data.data?.UserData?.Mission?.Missions;
+    
+            if (missions) {
+                const pendingMissions = Object.entries(missions)
+                    .filter(([_, mission]) => mission.FinTime > 0 && mission.RecvTime === 0)
+                    .map(([id, _]) => parseInt(id));
+    
+                if (pendingMissions.length > 0) {
+                    this.log(`Tìm thấy ${pendingMissions.length} nhiệm vụ cần nhận thưởng.`.green);
+    
+                    for (const missionId of pendingMissions) {
+                        const payload = { MissionId: missionId };
+                        try {
+                            const recvResponse = await axios.post(recvUrl, payload, { headers, httpsAgent: agent });
+                            if (recvResponse.data.code === 0) {
+                                this.log(`Đã nhận thưởng nhiệm vụ ID: ${missionId}`.green);
+                            } else {
+                                this.log(`Lỗi khi nhận thưởng nhiệm vụ ID: ${missionId}. Mã lỗi: ${recvResponse.data.code}`.red);
+                            }
+                        } catch (recvError) {
+                            this.log(`Lỗi khi gọi API nhận thưởng cho nhiệm vụ ID: ${missionId}`.red);
+                            console.error(recvError.message.red);
+                        }
+                    }
+                } else {
+                    this.log("Không có nhiệm vụ nào cần nhận thưởng.".yellow);
+                }
+            } else {
+                this.log("Không tìm thấy dữ liệu nhiệm vụ.".red);
+            }
+        } catch (error) {
+            this.log("Lỗi khi gọi API đồng bộ nhiệm vụ.".red);
+            console.error(error.message.red);
+        }
+    }
+
+    async openBox(gateway, headers, minikeyCount, proxy) {
+        const url = `${gateway}/OpenMinicryBox`;
+        const payload = { Num: minikeyCount };
+        const agent = new HttpsProxyAgent(proxy);
+    
+        try {
+            const response = await axios.post(url, payload, { headers, httpsAgent: agent });
+            if (response.data.code === 0) {
+                this.log(`Đã mở thành công ${minikeyCount} hộp Gacha Points.`.green);
+            } else {
+                this.log(`Lỗi khi mở hộp Gacha Points: ${response.data.message}`.red);
+            }
+        } catch (error) {
+            this.log(`Lỗi khi gọi API mở hộp Gacha Points.`.red);
             console.error(error.message.red);
         }
     }
@@ -374,9 +458,11 @@ class LegendOfArcadia {
                 const queryString = lines[i].trim();
                 const proxy = proxies[i].trim();
                 if (queryString && proxy) {
-                    const token = await this.login(queryString, proxy);
-                    if (token) {
-                        await this.getWorldBossState(token, i + 1, hoinangcap, proxy);
+                    const loginResult = await this.login(queryString, proxy);
+                    if (loginResult) {
+                        const { gateway, token, id } = loginResult;
+                        const headers = this.headers(token, id);
+                        await this.getWorldBossState(gateway, headers, i + 1, hoinangcap, proxy);
                         await this.waitWithCountdown(1);
                     }
                 }
